@@ -15,8 +15,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
-	"github.com/warpstreamlabs/warpstream-go/pkg/logging"
-	"go.uber.org/atomic"
 	apiv1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -52,64 +50,6 @@ func init() {
 	azRegex, err = regexp.Compile(azRegexPattern)
 	if err != nil {
 		panic(fmt.Errorf("error compiling regex: %w", err))
-	}
-}
-
-// NewAvailabilityZoneLoader returns a function that when invoked will return
-// the availability zone that the application is currently running in. The
-// loader will continuously run in the background until it is able to successfully
-// determine the availability zone and update the value returned by the returned
-// function. The returned function will return UnknownAvailabilityZone as the availability zone
-// until the zone is successfully determined.
-//
-// This function is a lot of ceremony, but the goal is to prevent situations where
-// agents are unable to start or get stuck with an UnknownAvailabilityZone availability zone
-// forever because the cloud-provider instance metadata server was temporarily
-// unavailable.
-func NewAvailabilityZoneLoader(shutdownCtx context.Context, logger *slog.Logger) func() string {
-	// Synchronously fetch the current Availability Zone (AZ) to ensure it's immediately available,
-	// particularly useful for local testing. This avoids initialization issues and the potential for empty AZ values.
-	// We do not log the error in that case since we did not give proper time to everything to try, and rather retry
-	// in the goroutine defined below.
-	initCtx, initCC := context.WithTimeout(shutdownCtx, 2*time.Second)
-	currAz, err := AvailabilityZone(initCtx, logger)
-	initCC()
-	if err == nil {
-		logger.InfoContext(
-			shutdownCtx,
-			"availability zone determined",
-			slog.String("availability_zone", currAz))
-
-		return func() string {
-			return currAz
-		}
-	}
-
-	az := atomic.NewString(UnknownAvailabilityZone)
-	go func() {
-		for {
-			select {
-			case <-shutdownCtx.Done():
-				return
-			default:
-				currAz, err := AvailabilityZone(shutdownCtx, logger)
-				if err == nil {
-					logger.InfoContext(
-						shutdownCtx,
-						"availability zone determined",
-						slog.String("availability_zone", currAz))
-					az.Store(currAz)
-					return
-				} else {
-					logger.ErrorContext(shutdownCtx, "failed to determine availability zone", logging.Error(err))
-				}
-				time.Sleep(10 * time.Second)
-			}
-		}
-	}()
-
-	return func() string {
-		return az.Load()
 	}
 }
 
