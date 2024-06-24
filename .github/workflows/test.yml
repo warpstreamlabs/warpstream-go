@@ -1,0 +1,45 @@
+name: Test Go
+
+# https://docs.github.com/en/actions/using-jobs/using-concurrency#example-only-cancel-in-progress-jobs-or-runs-for-the-current-workflow
+# Cancel ongoing jobs when we push an update in a PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/test.yml'
+  pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/test.yml'
+  # Enable the ability to run workflows manually in the UI.
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version-file: './go.mod'
+
+    - name: Install dependencies
+      run: go mod download
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Run all tests
+      run: go test ./...
