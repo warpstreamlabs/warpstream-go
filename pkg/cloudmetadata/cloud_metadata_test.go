@@ -17,31 +17,26 @@ func TestGCPHandling(t *testing.T) {
 
 func TestAzureZone(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/metadata/instance" {
-			t.Errorf("Expected to request '/metadata/instance', got: %s", r.URL.Path)
-		}
 		if r.Header.Get("Metadata") != "true" {
 			t.Errorf("Expected Metadata: true header, got: %s", r.Header.Get("Metadata"))
 		}
 
-		if r.URL.Query().Get("format") != "json" {
-			t.Errorf("Expected format: json query param, got: %s", r.URL.Query().Get("format"))
-		}
-		if r.URL.Query().Get("format") != "json" {
-			t.Errorf("Expected format: json query param, got: %s", r.URL.Query().Get("format"))
+		if r.URL.Query().Get("format") != "text" {
+			t.Errorf("Expected format: text query param, got: %s", r.URL.Query().Get("format"))
 		}
 		if r.URL.Query().Get("api-version") != "2024-07-17" {
 			t.Errorf("Expected api-version: 2024-07-17 query param, got: %s", r.URL.Query().Get("api-version"))
 		}
 
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`
-		{
-			"compute": {
-				"physicalZone": "useast-AZ01"
-			}
+		if r.URL.Path == "/metadata/instance/compute/location" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`eastus`))
+		} else if r.URL.Path == "/metadata/instance/compute/zone" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`1`))
+		} else {
+			t.Errorf("Unknown metadata path', got: %s", r.URL.Path)
 		}
-		`))
 	}))
 	defer server.Close()
 
@@ -49,5 +44,5 @@ func TestAzureZone(t *testing.T) {
 	ctx = context.WithValue(ctx, "url", server.URL)
 	zone, err := availabilityZoneAzure(ctx)
 	require.NoError(t, err)
-	require.Equal(t, zone, "useast-AZ01")
+	require.Equal(t, "eastus-1", zone)
 }
