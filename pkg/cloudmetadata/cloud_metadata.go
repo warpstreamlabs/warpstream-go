@@ -32,7 +32,7 @@ const (
 	// Keep in mind that while this regex is more general, it might also result in false positives by accepting invalid AZ names.
 	// It's important to combine this heuristic with additional checks based on cloud provider documentation or APIs
 	// to ensure that only valid AZ names are used in your application.
-	azRegexPattern = `^[a-z0-9\-]+$`
+	azRegexPattern = `^[a-zA-Z0-9\-]+$`
 	maxAzNameSize  = 128
 )
 
@@ -40,7 +40,7 @@ var (
 	UnknownAvailabilityZone = "WARPSTREAM_UNSET_AZ"
 
 	gcpMetadataAddress   = "http://169.254.169.254/computeMetadata/v1"
-	azureMetadataAddress = "http://169.254.169.254/metadata/instance"
+	azureMetadataAddress = "http://169.254.169.254"
 
 	azRegex *regexp.Regexp
 )
@@ -180,19 +180,34 @@ func availabilityZoneGCP(ctx context.Context) (string, error) {
 }
 
 type azureMetadata struct {
-	Zone string `json:"zone"`
+	Compute struct {
+		PhysicalZone string `json:"physicalZone"`
+	} `json:"compute"`
 }
 
 func availabilityZoneAzure(ctx context.Context) (string, error) {
+	// Referenced from https://github.com/microsoft/azureimds/blob/d9cd6819cf1496b7192a6bdc091a5dfa6a8b22d2/imdssample.go
 	ctx, cc := context.WithTimeout(ctx, 1*time.Second)
 	defer cc()
 
-	url := fmt.Sprintf("%s/instance/zone", azureMetadataAddress)
+	url := azureMetadataAddress
+
+	if ctxURL := ctx.Value("url"); ctxURL != nil {
+		url = ctxURL.(string)
+	}
+
+	url = fmt.Sprintf("%s/metadata/instance", url)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("error creating request for self availability zone in GCP: %w", err)
 	}
 	req.Header.Add("Metadata", "true")
+
+	q := req.URL.Query()
+	q.Add("format", "json")
+	q.Add("api-version", "2024-07-17")
+	req.URL.RawQuery = q.Encode()
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -213,15 +228,15 @@ func availabilityZoneAzure(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("error JSON unmarshaling instance metadata in Azure: %w", err)
 	}
 
-	if azureMeta.Zone == "" {
+	if azureMeta.Compute.PhysicalZone == "" {
 		return "", fmt.Errorf("got empty availability zone from Azure metadata")
 	}
 
-	if err := ValidateAZ(azureMeta.Zone); err != nil {
-		return "", fmt.Errorf("error validating availability zone from Azure metadata: %s: %w", azureMeta.Zone, err)
+	if err := ValidateAZ(azureMeta.Compute.PhysicalZone); err != nil {
+		return "", fmt.Errorf("error validating availability zone from Azure metadata: %s: %w", azureMeta.Compute.PhysicalZone, err)
 	}
 
-	return azureMeta.Zone, nil
+	return azureMeta.Compute.PhysicalZone, nil
 }
 
 // https://github.com/brunoscheufler/aws-ecs-metadata-go/blob/67e37ae746cd/v4.go
