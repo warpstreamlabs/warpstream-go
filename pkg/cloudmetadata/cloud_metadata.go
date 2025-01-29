@@ -40,7 +40,7 @@ var (
 	UnknownAvailabilityZone = "WARPSTREAM_UNSET_AZ"
 
 	gcpMetadataAddress   = "http://169.254.169.254/computeMetadata/v1"
-	azureMetadataAddress = "http://169.254.169.254/metadata/instance"
+	azureMetadataAddress = "http://169.254.169.254"
 
 	azRegex *regexp.Regexp
 )
@@ -179,49 +179,98 @@ func availabilityZoneGCP(ctx context.Context) (string, error) {
 	return selfAZS, nil
 }
 
-type azureMetadata struct {
-	Zone string `json:"zone"`
+func availabilityZoneAzure(ctx context.Context) (string, error) {
+	location, err := locationAzure(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	zone, err := zoneAzure(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%s-%s", location, zone), nil
 }
 
-func availabilityZoneAzure(ctx context.Context) (string, error) {
+func locationAzure(ctx context.Context) (string, error) {
 	ctx, cc := context.WithTimeout(ctx, 1*time.Second)
 	defer cc()
 
-	url := fmt.Sprintf("%s/instance/zone", azureMetadataAddress)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	baseURL := azureMetadataAddress
+
+	if ctxURL := ctx.Value("url"); ctxURL != nil {
+		baseURL = ctxURL.(string)
+	}
+
+	locationURL := fmt.Sprintf("%s/metadata/instance/compute/location", baseURL)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, locationURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("error creating request for self availability zone in GCP: %w", err)
+		return "", fmt.Errorf("error creating request for self location in Azure: %w", err)
 	}
 	req.Header.Add("Metadata", "true")
 
+	q := req.URL.Query()
+	q.Add("format", "text")
+	q.Add("api-version", "2024-07-17")
+	req.URL.RawQuery = q.Encode()
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("error fetching self availability zone in GCP: %w", err)
+		return "", fmt.Errorf("error fetching self location in Azure: %w", err)
 	}
 	defer resp.Body.Close()
 	selfMetadata, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("error reading self availability zone in GCP from response body: %w", err)
+		return "", fmt.Errorf("error reading self location in Azure from response body: %w", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("error getting availablity zone: %s", string(selfMetadata))
+		return "", fmt.Errorf("error getting location: %s", string(selfMetadata))
 	}
 
-	azureMeta := &azureMetadata{}
-	if err := json.Unmarshal(selfMetadata, azureMeta); err != nil {
-		return "", fmt.Errorf("error JSON unmarshaling instance metadata in Azure: %w", err)
+	return string(selfMetadata), nil
+}
+
+func zoneAzure(ctx context.Context) (string, error) {
+	ctx, cc := context.WithTimeout(ctx, 1*time.Second)
+	defer cc()
+
+	baseURL := azureMetadataAddress
+
+	if ctxURL := ctx.Value("url"); ctxURL != nil {
+		baseURL = ctxURL.(string)
 	}
 
-	if azureMeta.Zone == "" {
-		return "", fmt.Errorf("got empty availability zone from Azure metadata")
+	zoneURL := fmt.Sprintf("%s/metadata/instance/compute/zone", baseURL)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, zoneURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("error creating request for self zone in Azure: %w", err)
+	}
+	req.Header.Add("Metadata", "true")
+
+	q := req.URL.Query()
+	q.Add("format", "text")
+	q.Add("api-version", "2024-07-17")
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("error fetching self zone in Azure: %w", err)
+	}
+	defer resp.Body.Close()
+	selfMetadata, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("error reading self zone in Azure from response body: %w", err)
 	}
 
-	if err := ValidateAZ(azureMeta.Zone); err != nil {
-		return "", fmt.Errorf("error validating availability zone from Azure metadata: %s: %w", azureMeta.Zone, err)
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("error getting zone: %s", string(selfMetadata))
 	}
 
-	return azureMeta.Zone, nil
+	return string(selfMetadata), nil
 }
 
 // https://github.com/brunoscheufler/aws-ecs-metadata-go/blob/67e37ae746cd/v4.go
