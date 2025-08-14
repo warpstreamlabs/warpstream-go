@@ -2,6 +2,7 @@ package cloudmetadata
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,7 +43,7 @@ func TestAzureZone(t *testing.T) {
 
 	ctx := context.TODO()
 	ctx = context.WithValue(ctx, "url", server.URL)
-	zone, err := availabilityZoneAzure(ctx)
+	zone, err := availabilityZoneAzure(ctx, slog.Default())
 	require.NoError(t, err)
 	require.Equal(t, "eastus-1", zone)
 }
