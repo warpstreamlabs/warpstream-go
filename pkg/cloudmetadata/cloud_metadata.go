@@ -68,7 +68,7 @@ func AvailabilityZone(shutdownCtx context.Context, logger *slog.Logger) (string,
 	var (
 		// all the available methods (with a description string that we'll use to prefix the error in case all
 		// attempts failed)
-		availabilityZoneMethods = map[string]func(ctx context.Context) (string, error){
+		availabilityZoneMethods = map[string]func(ctx context.Context, logger *slog.Logger) (string, error){
 			"awsECS": availabilityZoneAWSECS,
 			"awsEC2": availabilityZoneAWSEC2,
 			"gcp":    availabilityZoneGCP,
@@ -86,7 +86,7 @@ func AvailabilityZone(shutdownCtx context.Context, logger *slog.Logger) (string,
 		}
 		// dedicated deadline for each method
 		ctx, cc := context.WithTimeout(shutdownCtx, 5*time.Second)
-		az, err := azMethod(ctx)
+		az, err := azMethod(ctx, logger)
 		cc()
 		if err == nil {
 			return az, nil
@@ -114,7 +114,7 @@ func envvarAvailabilityZone(shutdownCtx context.Context, logger *slog.Logger) (s
 	return "", false
 }
 
-func availabilityZoneAWSEC2(ctx context.Context) (string, error) {
+func availabilityZoneAWSEC2(ctx context.Context, _ *slog.Logger) (string, error) {
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return "", fmt.Errorf("error loading default AWS config: %w", err)
@@ -145,7 +145,7 @@ func availabilityZoneAWSEC2(ctx context.Context) (string, error) {
 	return azs, nil
 }
 
-func availabilityZoneGCP(ctx context.Context) (string, error) {
+func availabilityZoneGCP(ctx context.Context, _ *slog.Logger) (string, error) {
 	ctx, cc := context.WithTimeout(ctx, 1*time.Second)
 	defer cc()
 
@@ -183,7 +183,7 @@ func availabilityZoneGCP(ctx context.Context) (string, error) {
 	return selfAZS, nil
 }
 
-func availabilityZoneAzure(ctx context.Context) (string, error) {
+func availabilityZoneAzure(ctx context.Context, _ *slog.Logger) (string, error) {
 	location, err := locationAzure(ctx)
 	if err != nil {
 		return "", err
@@ -286,7 +286,7 @@ type taskMetadata struct {
 	AvailabilityZone string `json:"AvailabilityZone"`
 }
 
-func availabilityZoneAWSECS(ctx context.Context) (string, error) {
+func availabilityZoneAWSECS(ctx context.Context, _ *slog.Logger) (string, error) {
 	metadataUrl := os.Getenv(ecsMetadataUriEnvV4)
 	if metadataUrl == "" {
 		return "", fmt.Errorf("missing metadata uri in environment (%s), likely not running in ECS", ecsMetadataUriEnvV4)
@@ -330,7 +330,7 @@ func availabilityZoneAWSECS(ctx context.Context) (string, error) {
 	return taskMetadata.AvailabilityZone, nil
 }
 
-func availabilityZoneK8sAPI(ctx context.Context) (string, error) {
+func availabilityZoneK8sAPI(ctx context.Context, logger *slog.Logger) (string, error) {
 	var (
 		podName = os.Getenv("POD_NAME")
 		podNs   = os.Getenv("POD_NAMESPACE")
@@ -380,7 +380,7 @@ func availabilityZoneK8sAPI(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to query k8s api: %w", lastErr)
 	}
 
-	slog.InfoContext(ctx, "running in kubernetes cluster", slog.String("version", fmt.Sprintf("%s.%s", v.Major, v.Minor)))
+	logger.InfoContext(ctx, "running in kubernetes cluster", slog.String("version", fmt.Sprintf("%s.%s", v.Major, v.Minor)))
 
 	pod, err := client.CoreV1().Pods(podNs).Get(ctx, podName, v1.GetOptions{})
 	if err != nil {
@@ -393,7 +393,7 @@ func availabilityZoneK8sAPI(ctx context.Context) (string, error) {
 	}
 
 	if foundAz, ok := node.GetLabels()[apiv1.LabelTopologyZone]; ok {
-		slog.InfoContext(ctx, fmt.Sprintf("found this zone on the node labels: %s", foundAz))
+		logger.InfoContext(ctx, fmt.Sprintf("found this zone on the node labels: %s", foundAz))
 		return foundAz, nil
 	}
 
