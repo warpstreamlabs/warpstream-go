@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"k8s.io/client-go/util/homedir"
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -22,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
+	restclient "k8s.io/client-go/rest"
 )
 
 const (
@@ -43,8 +41,6 @@ var (
 
 	gcpMetadataAddress   = "http://169.254.169.254/computeMetadata/v1"
 	azureMetadataAddress = "http://169.254.169.254"
-
-	kubeConfigPath = filepath.Join(homedir.HomeDir(), ".kube", "config")
 
 	azRegex *regexp.Regexp
 )
@@ -340,7 +336,7 @@ func availabilityZoneK8sAPI(ctx context.Context, logger *slog.Logger) (string, e
 		return "", fmt.Errorf("likely not running in a k8s cluster (missing POD_NAME or POD_NAMESPACE environment variable")
 	}
 
-	conf, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
+	conf, err := restclient.InClusterConfig()
 	if err != nil {
 		return "", fmt.Errorf("failed to build k8s config: %w", err)
 	}
