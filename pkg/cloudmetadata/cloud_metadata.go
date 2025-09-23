@@ -55,39 +55,67 @@ func init() {
 
 // AvailabilityZone returns the availability zone in which the application is currently
 // running.
-func AvailabilityZone(shutdownCtx context.Context, logger *slog.Logger) (string, error) {
-	az, ok := envvarAvailabilityZone(shutdownCtx, logger)
+func AvailabilityZone(ctx context.Context, logger *slog.Logger) (string, error) {
+	return availabilityZone(ctx, logger, []azLoaderMethod{
+		// Start with k8s because it's the most common for production and cloud-agnostic.
+		{name: "k8sZoneName", impl: availabilityZoneNameK8sAPI},
+		{name: "awsEC2ZoneName", impl: availabilityZoneNameAWSEC2},
+		{name: "awsECSZoneName", impl: availabilityZoneAWSECS},
+		{name: "gcp", impl: availabilityZoneGCP},
+		{name: "azure", impl: availabilityZoneAzure},
+	})
+}
+
+// AvailabilityZoneID returns the availability zone ID in which the application is currently
+// running. It only differs from AvailabilityZone in AWS, in GCP and Azure it runs the exact
+// same code. Note that this method will look for the AZ ID first, but will fallback to the
+// AZ Name in AWS if it has to.
+func AvailabilityZoneID(ctx context.Context, logger *slog.Logger) (string, error) {
+	return availabilityZone(ctx, logger, []azLoaderMethod{
+		// Start with zone ID implementations.
+		{name: "k8sZoneName", impl: availabilityZoneIDK8sAPI},
+		{name: "awsEC2ZoneName", impl: availabilityZoneIDAWSEC2},
+
+		// Then fallback to zone-name implementations.
+		{name: "k8sZoneName", impl: availabilityZoneNameK8sAPI},
+		{name: "awsEC2ZoneName", impl: availabilityZoneNameAWSEC2},
+		{name: "awsECSZoneName", impl: availabilityZoneAWSECS},
+
+		// No concept of zone IDs in GCP/Azure, just use the regular
+		// code.
+		{name: "gcp", impl: availabilityZoneGCP},
+		{name: "azure", impl: availabilityZoneAzure},
+	})
+}
+
+func availabilityZone(
+	ctx context.Context,
+	logger *slog.Logger,
+	// All the available methods (with a description string that we'll use to prefix the error in case all
+	// attempts failed). Use a slice instead of a map so we can control the ordering.
+	methods []azLoaderMethod,
+) (string, error) {
+	// Always honor the environment variable override regardless of which methods are passed.
+	az, ok := envvarAvailabilityZone(ctx, logger)
 	if ok {
 		return az, nil
 	}
 
-	var (
-		// all the available methods (with a description string that we'll use to prefix the error in case all
-		// attempts failed)
-		availabilityZoneMethods = map[string]func(ctx context.Context, logger *slog.Logger) (string, error){
-			"awsECS": availabilityZoneAWSECS,
-			"awsEC2": availabilityZoneAWSEC2,
-			"gcp":    availabilityZoneGCP,
-			"azure":  availabilityZoneAzure,
-			"k8s":    availabilityZoneK8sAPI,
-		}
-
-		azErrs = make([]error, 0)
-	)
-
-	for desc, azMethod := range availabilityZoneMethods {
-		if shutdownCtx.Err() != nil {
-			azErrs = append(azErrs, fmt.Errorf("%s Err: %w", desc, shutdownCtx.Err()))
+	var azErrs = make([]error, 0)
+	for _, method := range methods {
+		if ctx.Err() != nil {
+			azErrs = append(azErrs, fmt.Errorf("%s Err: %w", method.name, ctx.Err()))
 			continue
 		}
+
 		// dedicated deadline for each method
-		ctx, cc := context.WithTimeout(shutdownCtx, 5*time.Second)
-		az, err := azMethod(ctx, logger)
+		ctx, cc := context.WithTimeout(ctx, 5*time.Second)
+		az, err := method.impl(ctx, logger)
 		cc()
 		if err == nil {
 			return az, nil
 		}
-		azErrs = append(azErrs, fmt.Errorf("%sErr: %w", desc, err))
+		azErrs = append(azErrs, fmt.Errorf("%sErr: %w", method.name, err))
 	}
 
 	if len(azErrs) == 0 {
@@ -98,10 +126,10 @@ func AvailabilityZone(shutdownCtx context.Context, logger *slog.Logger) (string,
 	return UnknownAvailabilityZone, err
 }
 
-func envvarAvailabilityZone(shutdownCtx context.Context, logger *slog.Logger) (string, bool) {
+func envvarAvailabilityZone(ctx context.Context, logger *slog.Logger) (string, bool) {
 	if az := warpStreamAvailabilityZone(); az != "" {
 		logger.InfoContext(
-			shutdownCtx,
+			ctx,
 			"detected availability zone from environment variables",
 			slog.String("availability_zone", az))
 		return az, true
@@ -110,16 +138,40 @@ func envvarAvailabilityZone(shutdownCtx context.Context, logger *slog.Logger) (s
 	return "", false
 }
 
-func availabilityZoneAWSEC2(ctx context.Context, _ *slog.Logger) (string, error) {
+func availabilityZoneNameAWSEC2(
+	ctx context.Context,
+	logger *slog.Logger,
+) (string, error) {
+	return availabilityZoneAWSEC2(ctx, logger, false)
+}
+
+func availabilityZoneIDAWSEC2(
+	ctx context.Context,
+	logger *slog.Logger,
+) (string, error) {
+	return availabilityZoneAWSEC2(ctx, logger, true)
+}
+
+func availabilityZoneAWSEC2(
+	ctx context.Context,
+	_ *slog.Logger,
+	useID bool,
+) (string, error) {
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return "", fmt.Errorf("error loading default AWS config: %w", err)
 	}
 
-	client := imds.NewFromConfig(cfg)
-	output, err := client.GetMetadata(ctx, &imds.GetMetadataInput{
-		Path: "placement/availability-zone",
-	})
+	var (
+		client = imds.NewFromConfig(cfg)
+		input  = &imds.GetMetadataInput{
+			Path: "placement/availability-zone",
+		}
+	)
+	if useID {
+		input.Path = "placement/availability-zone-id"
+	}
+	output, err := client.GetMetadata(ctx, input)
 	if err != nil {
 		return "", fmt.Errorf("error getting metadata: %w", err)
 	}
@@ -326,7 +378,25 @@ func availabilityZoneAWSECS(ctx context.Context, _ *slog.Logger) (string, error)
 	return taskMetadata.AvailabilityZone, nil
 }
 
-func availabilityZoneK8sAPI(ctx context.Context, logger *slog.Logger) (string, error) {
+func availabilityZoneNameK8sAPI(
+	ctx context.Context,
+	logger *slog.Logger,
+) (string, error) {
+	return availabilityZoneK8sAPI(ctx, logger, false)
+}
+
+func availabilityZoneIDK8sAPI(
+	ctx context.Context,
+	logger *slog.Logger,
+) (string, error) {
+	return availabilityZoneK8sAPI(ctx, logger, true)
+}
+
+func availabilityZoneK8sAPI(
+	ctx context.Context,
+	logger *slog.Logger,
+	useAZID bool,
+) (string, error) {
 	var (
 		podName = os.Getenv("POD_NAME")
 		podNs   = os.Getenv("POD_NAMESPACE")
@@ -388,7 +458,12 @@ func availabilityZoneK8sAPI(ctx context.Context, logger *slog.Logger) (string, e
 		return "", fmt.Errorf("unable to get node information: %w", err)
 	}
 
-	if foundAz, ok := node.GetLabels()[apiv1.LabelTopologyZone]; ok {
+	label := apiv1.LabelTopologyZone
+	if useAZID {
+		label = "topology.k8s.aws/zone-id"
+	}
+
+	if foundAz, ok := node.GetLabels()[label]; ok {
 		logger.InfoContext(ctx, fmt.Sprintf("found this zone on the node labels: %s", foundAz))
 		return foundAz, nil
 	}
@@ -420,4 +495,9 @@ func maybeProcessGCPAZ(az string) string {
 // warpStreamAvailabilityZone returns the value of the WARPSTREAM_AVAILABILITY_ZONE.
 func warpStreamAvailabilityZone() string {
 	return os.Getenv("WARPSTREAM_AVAILABILITY_ZONE")
+}
+
+type azLoaderMethod struct {
+	name string
+	impl func(ctx context.Context, logger *slog.Logger) (string, error)
 }
